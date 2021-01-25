@@ -56,12 +56,12 @@ class CamEncode(nn.Module):
     def get_depth_feat(self, x):
         x = self.get_eff_depth(x)
         
-        # Depth head
+        # Depth head， out shape B*N, D+C, out_h, out_w
         x = self.depthnet(x)
         
         # 深度分布，softmax
         depth = self.get_depth_dist(x[:, :self.D])
-        # 深度和特征想成输出
+        # new_x shape: B*N, D*C, out_h, out_w
         new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
 
         return depth, new_x
@@ -78,8 +78,13 @@ class CamEncode(nn.Module):
         for idx, block in enumerate(self.trunk._blocks):
             drop_connect_rate = self.trunk._global_params.drop_connect_rate
             if drop_connect_rate:
+                #idx越大，drop越大
                 drop_connect_rate *= float(idx) / len(self.trunk._blocks) # scale drop connect_rate
+            # 流过每个block
             x = block(x, drop_connect_rate=drop_connect_rate)
+            
+            # xshape：B*N, C, H/downsample, W/downsample
+            # 记录每个下采样前的block输出
             if prev_x.size(2) > x.size(2):
                 endpoints['reduction_{}'.format(len(endpoints)+1)] = prev_x
             prev_x = x
@@ -151,7 +156,8 @@ class LiftSplatShoot(nn.Module):
         self.dx = nn.Parameter(dx, requires_grad=False)
         self.bx = nn.Parameter(bx, requires_grad=False)
         self.nx = nn.Parameter(nx, requires_grad=False)
-
+        
+        # 每个相机特征提取参数
         self.downsample = 16
         self.camC = 64
         self.frustum = self.create_frustum()
@@ -166,9 +172,12 @@ class LiftSplatShoot(nn.Module):
         # make grid in image plane
         ogfH, ogfW = self.data_aug_conf['final_dim']
         fH, fW = ogfH // self.downsample, ogfW // self.downsample
-        ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)
+        # 深度是grid深度，并不是射线上的长度 => 最终ds.shape = 深度格子数，输出图长，输出图宽
+        ds = torch.arange(*self.grid_conf['dbound'], dtype=torch.float).view(-1, 1, 1).expand(-1, fH, fW)、
         D, _, _ = ds.shape
+        # 每个像素的x
         xs = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)
+        # 每个像素的y
         ys = torch.linspace(0, ogfH - 1, fH, dtype=torch.float).view(1, fH, 1).expand(D, fH, fW)
 
         # D x H x W x 3
@@ -183,7 +192,7 @@ class LiftSplatShoot(nn.Module):
         B, N, _ = trans.shape
 
         # undo post-transformation
-        # B x N x D x H x W x 3
+        # B x N x D x H x W x 3， B是batch，N图像个数
         points = self.frustum - post_trans.view(B, N, 1, 1, 1, 3)
         points = torch.inverse(post_rots).view(B, N, 1, 1, 1, 3, 3).matmul(points.unsqueeze(-1))
 
@@ -201,9 +210,11 @@ class LiftSplatShoot(nn.Module):
         """Return B x N x D x H/downsample x W/downsample x C
         """
         B, N, C, imH, imW = x.shape
-
+        
+        # batch是B*N
         x = x.view(B*N, C, imH, imW)
         x = self.camencode(x)
+        # camencode 输出是每一个depth grid的feature
         x = x.view(B, N, self.camC, self.D, imH//self.downsample, imW//self.downsample)
         x = x.permute(0, 1, 3, 4, 5, 2)
 
