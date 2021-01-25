@@ -29,6 +29,7 @@ class Up(nn.Module):
         )
 
     def forward(self, x1, x2):
+        # 上采样，concat，2* conv
         x1 = self.up(x1)
         x1 = torch.cat([x2, x1], dim=1)
         return self.conv(x1)
@@ -39,10 +40,14 @@ class CamEncode(nn.Module):
         super(CamEncode, self).__init__()
         self.D = D
         self.C = C
-
+        
+        # backbone是efficient net
         self.trunk = EfficientNet.from_pretrained("efficientnet-b0")
-
+        
+        # 上采样block1
         self.up1 = Up(320+112, 512)
+        
+        # depthnet其实就是一个head，最终是一个深度分布和一个特征
         self.depthnet = nn.Conv2d(512, self.D + self.C, kernel_size=1, padding=0)
 
     def get_depth_dist(self, x, eps=1e-20):
@@ -50,10 +55,13 @@ class CamEncode(nn.Module):
 
     def get_depth_feat(self, x):
         x = self.get_eff_depth(x)
-        # Depth
+        
+        # Depth head
         x = self.depthnet(x)
-
+        
+        # 深度分布，softmax
         depth = self.get_depth_dist(x[:, :self.D])
+        # 深度和特征想成输出
         new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
 
         return depth, new_x
@@ -90,7 +98,7 @@ class CamEncode(nn.Module):
 class BevEncode(nn.Module):
     def __init__(self, inC, outC):
         super(BevEncode, self).__init__()
-
+        
         trunk = resnet18(pretrained=False, zero_init_residual=True)
         self.conv1 = nn.Conv2d(inC, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
@@ -112,6 +120,7 @@ class BevEncode(nn.Module):
         )
 
     def forward(self, x):
+        # 开始就是简单的conv下采样
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -119,7 +128,8 @@ class BevEncode(nn.Module):
         x1 = self.layer1(x)
         x = self.layer2(x1)
         x = self.layer3(x)
-
+        
+        # 两次上采样
         x = self.up1(x, x1)
         x = self.up2(x)
 
@@ -132,10 +142,12 @@ class LiftSplatShoot(nn.Module):
         self.grid_conf = grid_conf
         self.data_aug_conf = data_aug_conf
 
+        # 确定点云范围
         dx, bx, nx = gen_dx_bx(self.grid_conf['xbound'],
                                               self.grid_conf['ybound'],
                                               self.grid_conf['zbound'],
                                               )
+        # 范围形成tensor
         self.dx = nn.Parameter(dx, requires_grad=False)
         self.bx = nn.Parameter(bx, requires_grad=False)
         self.nx = nn.Parameter(nx, requires_grad=False)
